@@ -167,7 +167,7 @@
           alert(data.detail || 'Error fetching transcript from video');
         }
       } catch (err) {
-        alert('Could not connect to the backend server. Make sure Uvicorn is running.');
+        alert('Could not connect to the backend server. Please try again in a moment.');
       } finally {
         loading.classList.add('hidden');
         submitBtn.disabled = false;
