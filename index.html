@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Free YouTube Transcript Generator | Fast & Unlimited</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    body { font-family: 'Inter', sans-serif; }
+    /* Style custom Google Translate widget */
+    .goog-te-gadget-simple {
+      background-color: #1e293b !important;
+      border: 1px solid #334155 !important;
+      padding: 6px 12px !important;
+      border-radius: 8px !important;
+      font-size: 13px !important;
+    }
+    .goog-te-gadget-simple span { color: #cbd5e1 !important; }
+    .goog-te-banner-frame { display: none !important; }
+    body { top: 0px !important; }
+  </style>
+</head>
+<body class="bg-slate-900 text-white min-h-screen flex flex-col items-center justify-between p-4 sm:p-6">
+
+  <!-- Top Bar & Language Selector -->
+  <div class="w-full max-w-3xl flex justify-between items-center py-2 mb-4">
+    <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider">
+      YT Transcript Tool
+    </div>
+    <!-- Google Translate Dropdown Container -->
+    <div id="google_translate_element"></div>
+  </div>
+
+  <!-- Main Container -->
+  <div class="max-w-3xl w-full my-auto">
+    
+    <!-- Header -->
+    <header class="text-center mb-8">
+      <h1 class="text-3xl sm:text-4xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-cyan-400 mb-3">
+        Free YouTube Transcript Generator
+      </h1>
+      <p class="text-slate-400 text-sm sm:text-base max-w-lg mx-auto">
+        Extract transcripts and captions from any YouTube video instantly for free.
+      </p>
+    </header>
+
+    <!-- Top Ad Banner Placeholder -->
+    <div id="ad-top" class="w-full h-20 bg-slate-800/40 border border-dashed border-slate-700 rounded-xl flex items-center justify-center text-xs text-slate-500 mb-6">
+      [ Advertisement Space ]
+    </div>
+
+    <!-- Main Input Card -->
+    <div class="bg-slate-800/80 backdrop-blur border border-slate-700/80 p-5 sm:p-8 rounded-2xl shadow-2xl mb-6">
+      <div class="flex flex-col sm:flex-row gap-3">
+        <input type="text" id="youtubeUrl" placeholder="Paste YouTube link here (e.g. https://www.youtube.com/watch?v=...)" 
+               class="w-full p-3.5 rounded-xl bg-slate-900/90 text-white border border-slate-700 focus:outline-none focus:border-indigo-500 transition placeholder:text-slate-500 text-sm sm:text-base">
+        <button onclick="fetchTranscript()" id="submitBtn"
+                class="bg-indigo-600 hover:bg-indigo-500 text-white font-bold px-8 py-3.5 rounded-xl transition flex items-center justify-center gap-2 whitespace-nowrap shadow-lg shadow-indigo-600/20">
+          <span>Get Transcript</span>
+        </button>
+      </div>
+
+      <!-- Loading Indicator -->
+      <div id="loading" class="hidden text-center text-indigo-400 my-6 animate-pulse font-medium">
+        Fetching video transcript from YouTube...
+      </div>
+
+      <!-- Result Box -->
+      <div id="resultBox" class="hidden mt-6">
+        
+        <!-- Action Bar & Tabs -->
+        <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-700 pb-3 mb-4">
+          <div class="flex gap-2 bg-slate-900 p-1 rounded-lg text-xs font-semibold">
+            <button id="tabClean" onclick="switchTab('clean')" class="px-3 py-1.5 rounded-md bg-indigo-600 text-white transition">Plain Text</button>
+            <button id="tabTime" onclick="switchTab('time')" class="px-3 py-1.5 rounded-md text-slate-400 hover:text-white transition">With Timestamps</button>
+          </div>
+
+          <div class="flex gap-2">
+            <button onclick="copyText()" id="copyBtn" class="text-xs bg-slate-700 hover:bg-slate-600 border border-slate-600 px-3 py-2 rounded-lg text-slate-200 transition flex items-center gap-1">
+              📋 <span>Copy Text</span>
+            </button>
+            <button onclick="downloadText()" class="text-xs bg-emerald-700 hover:bg-emerald-600 text-white px-3 py-2 rounded-lg transition flex items-center gap-1">
+              ⬇️ <span>Download .txt</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Transcript Display Boxes -->
+        <div id="transcriptClean" class="p-4 bg-slate-950 rounded-xl max-h-96 overflow-y-auto text-slate-300 leading-relaxed text-sm whitespace-pre-wrap border border-slate-800/80"></div>
+        <div id="transcriptTime" class="hidden p-4 bg-slate-950 rounded-xl max-h-96 overflow-y-auto text-slate-300 leading-relaxed text-sm whitespace-pre-wrap border border-slate-800/80 font-mono"></div>
+      </div>
+    </div>
+
+    <!-- Bottom Ad Banner Placeholder -->
+    <div id="ad-bottom" class="w-full h-24 bg-slate-800/40 border border-dashed border-slate-700 rounded-xl flex items-center justify-center text-xs text-slate-500 mb-6">
+      [ Advertisement Space ]
+    </div>
+
+  </div>
+
+  <!-- Footer -->
+  <footer class="text-center text-xs text-slate-500 py-4">
+    &copy; 2026 - Free YouTube Transcript Tool. All Rights Reserved.
+  </footer>
+
+  <!-- Google Translate Integration Script -->
+  <script type="text/javascript">
+    function googleTranslateElementInit() {
+      new google.translate.TranslateElement({
+        pageLanguage: 'en',
+        layout: google.translate.TranslateElement.InlineLayout.SIMPLE
+      }, 'google_translate_element');
+    }
+  </script>
+  <script type="text/javascript" src="//translate.google.com/translate_a/element.js?cb=googleTranslateElementInit"></script>
+
+  <!-- Application Logic -->
+  <script>
+    let globalTranscript = [];
+    let globalFullText = "";
+
+    document.getElementById("youtubeUrl").addEventListener("keypress", function(event) {
+      if (event.key === "Enter") {
+        fetchTranscript();
+      }
+    });
+
+    async function fetchTranscript() {
+      const urlInput = document.getElementById('youtubeUrl').value.trim();
+      const loading = document.getElementById('loading');
+      const resultBox = document.getElementById('resultBox');
+      const submitBtn = document.getElementById('submitBtn');
+
+      if (!urlInput) return alert('Please enter a YouTube video URL');
+
+      loading.classList.remove('hidden');
+      resultBox.classList.add('hidden');
+      submitBtn.disabled = true;
+      submitBtn.classList.add('opacity-50');
+
+      try {
+        const response = await fetch(`http://127.0.0.1:8000/api/transcript?url=${encodeURIComponent(urlInput)}`);
+        const data = await response.json();
+
+        if (response.ok) {
+          globalFullText = data.full_text;
+          globalTranscript = data.transcript;
+
+          // Set Plain Text
+          document.getElementById('transcriptClean').innerText = data.full_text;
+
+          // Set Timestamps Format
+          const timeFormatted = data.transcript.map(item => {
+            const minutes = Math.floor(item.start / 60).toString().padStart(2, '0');
+            const seconds = Math.floor(item.start % 60).toString().padStart(2, '0');
+            return `[${minutes}:${seconds}] ${item.text}`;
+          }).join('\n');
+
+          document.getElementById('transcriptTime').innerText = timeFormatted;
+
+          switchTab('clean');
+          resultBox.classList.remove('hidden');
+        } else {
+          alert(data.detail || 'Error fetching transcript from video');
+        }
+      } catch (err) {
+        alert('Could not connect to the backend server. Make sure Uvicorn is running.');
+      } finally {
+        loading.classList.add('hidden');
+        submitBtn.disabled = false;
+        submitBtn.classList.remove('opacity-50');
+      }
+    }
+
+    function switchTab(type) {
+      const cleanBox = document.getElementById('transcriptClean');
+      const timeBox = document.getElementById('transcriptTime');
+      const tabClean = document.getElementById('tabClean');
+      const tabTime = document.getElementById('tabTime');
+
+      if (type === 'clean') {
+        cleanBox.classList.remove('hidden');
+        timeBox.classList.add('hidden');
+        tabClean.className = "px-3 py-1.5 rounded-md bg-indigo-600 text-white transition";
+        tabTime.className = "px-3 py-1.5 rounded-md text-slate-400 hover:text-white transition";
+      } else {
+        cleanBox.classList.add('hidden');
+        timeBox.classList.remove('hidden');
+        tabTime.className = "px-3 py-1.5 rounded-md bg-indigo-600 text-white transition";
+        tabClean.className = "px-3 py-1.5 rounded-md text-slate-400 hover:text-white transition";
+      }
+    }
+
+    function copyText() {
+      const isCleanVisible = !document.getElementById('transcriptClean').classList.contains('hidden');
+      const textToCopy = isCleanVisible ? 
+        document.getElementById('transcriptClean').innerText : 
+        document.getElementById('transcriptTime').innerText;
+
+      navigator.clipboard.writeText(textToCopy);
+
+      const copyBtnSpan = document.querySelector('#copyBtn span');
+      copyBtnSpan.innerText = 'Copied!';
+      setTimeout(() => {
+        copyBtnSpan.innerText = 'Copy Text';
+      }, 2000);
+    }
+
+    function downloadText() {
+      const isCleanVisible = !document.getElementById('transcriptClean').classList.contains('hidden');
+      const textToDownload = isCleanVisible ? 
+        document.getElementById('transcriptClean').innerText : 
+        document.getElementById('transcriptTime').innerText;
+
+      const blob = new Blob([textToDownload], { type: 'text/plain;charset=utf-8' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'transcript.txt';
+      a.click();
+    }
+  </script>
+</body>
+</html>
