@@ -1,6 +1,7 @@
 import re
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
 
 app = FastAPI(
@@ -30,7 +31,7 @@ def extract_video_id(url: str) -> str:
 
 @app.get("/")
 def read_root():
-    return {"message": "مرحباً بك في API تفريغ نصوص يوتيوب."}
+    return FileResponse("index.html")
 
 @app.get("/api/transcript")
 def get_transcript(url: str = Query(..., description="رابط فيديو اليوتيوب أو الـ Video ID")):

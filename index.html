@@ -142,7 +142,7 @@
       submitBtn.classList.add('opacity-50');
 
       try {
-        const response = await fetch(`https://yt-transcript-app-tez5.onrender.com/api/transcript?url=${encodeURIComponent(urlInput)}`);
+        const response = await fetch(`/api/transcript?url=${encodeURIComponent(urlInput)}`);
         const data = await response.json();
 
         if (response.ok) {
