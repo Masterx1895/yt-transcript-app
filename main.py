@@ -1,3 +1,4 @@
+import os
 import re
 import json
 import html
@@ -13,7 +14,7 @@ from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, No
 app = FastAPI(
     title="YouTube Transcript API",
     description="API لتفريغ النصوص من فيديوهات اليوتيوب مع دعم تجاوز الحظر التلقائي",
-    version="1.1.0"
+    version="2.0.0"
 )
 
 # السماح للاتصال من الفرونت إند (CORS)
@@ -57,13 +58,28 @@ INVIDIOUS_INSTANCES = [
 ]
 
 def extract_video_id(url: str) -> Optional[str]:
-    """استخراج Video ID من رابط اليوتيوب"""
-    regex = r"(?:v=|\/([0-9A-Za-z_-]{11}).*|list=|\/embed\/|\/v\/|https:\/\/youtu\.be\/|\/shorts\/)([0-9A-Za-z_-]{11})"
-    match = re.search(regex, url)
-    if match:
-        return match.group(1) or match.group(2)
+    """استخراج Video ID بدقة من مختلف صيغ روابط يوتيوب بما فيها روابط المشاركة القصيرة والـ Shorts"""
+    if not url:
+        return None
+    url = url.strip()
     if len(url) == 11 and re.match(r"^[0-9A-Za-z_-]{11}$", url):
         return url
+
+    # دعم youtu.be مع معلمات المشاركة مثل ?si=
+    match = re.search(r"youtu\.be\/([0-9A-Za-z_-]{11})", url)
+    if match:
+        return match.group(1)
+
+    # دعم youtube.com/watch?v=
+    match = re.search(r"[?&]v=([0-9A-Za-z_-]{11})", url)
+    if match:
+        return match.group(1)
+
+    # دعم youtube.com/shorts/ و embed/
+    match = re.search(r"(?:shorts|embed|v)\/([0-9A-Za-z_-]{11})", url)
+    if match:
+        return match.group(1)
+
     return None
 
 def parse_time_str(t_str: str) -> float:
@@ -353,7 +369,9 @@ def fetch_fallback_transcript(video_id: str) -> Optional[List[Dict]]:
 
 @app.get("/")
 def read_root():
-    return FileResponse("index.html")
+    if os.path.exists("index.html"):
+        return FileResponse("index.html")
+    return {"message": "Server is running."}
 
 @app.get("/api/transcript")
 def get_transcript(url: str = Query(..., description="رابط فيديو اليوتيوب أو الـ Video ID")):
@@ -368,7 +386,7 @@ def get_transcript(url: str = Query(..., description="رابط فيديو الي
     fetched_transcript = None
     yt_api = YouTubeTranscriptApi()
 
-    # 1. المحاولة الأولى: عبر مكتبة youtube-transcript-api الرسمية
+    # 1. المحاولة الأولى: عبر مكتبة youtube-transcript-api
     try:
         if hasattr(yt_api, 'fetch'):
             try:
@@ -392,8 +410,8 @@ def get_transcript(url: str = Query(..., description="رابط فيديو الي
                 fetched_transcript = yt_api.get_transcript(video_id, languages=['ar', 'en'])
             except Exception:
                 fetched_transcript = yt_api.get_transcript(video_id)
-    except Exception as e:
-        # عند حدوث أي خطأ أو حظر IP، ننتقل فوراً للنظام الاحتياطي
+    except Exception:
+        # في حال حدوث أي استثناء أو حظر IP ننتقل مباشرة للـ Fallback
         fetched_transcript = None
 
     # 2. المحاولة الثانية: تفعيل نظام Fallback التلقائي في حال فشل المحاولة الأولى
