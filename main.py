@@ -1,21 +1,17 @@
 import os
 import re
-import json
 import html
-import requests
-import xml.etree.ElementTree as ET
-from typing import List, Dict, Optional
+import tempfile
+import glob
+from typing import Optional, List, Dict, Any
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+import yt_dlp
 from youtube_transcript_api import YouTubeTranscriptApi
 
-app = FastAPI(
-    title="YouTube Transcript API",
-    description="تفريغ نصوص يوتيوب فوري لجميع اللغات والترجمات التلقائية",
-    version="3.0.0"
-)
+app = FastAPI(title="TranscriptFlow API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -26,80 +22,180 @@ app.add_middleware(
 )
 
 def extract_video_id(url: str) -> Optional[str]:
-    """استخراج معرّف الفيديو بدقة متناهية"""
+    """Extract YouTube 11-char video ID from any URL variant or raw ID"""
     if not url:
         return None
     url = url.strip()
     if len(url) == 11 and re.match(r"^[0-9A-Za-z_-]{11}$", url):
         return url
-    match = re.search(r"youtu\.be\/([0-9A-Za-z_-]{11})", url)
-    if match:
-        return match.group(1)
-    match = re.search(r"[?&]v=([0-9A-Za-z_-]{11})", url)
-    if match:
-        return match.group(1)
-    match = re.search(r"(?:shorts|embed|v)\/([0-9A-Za-z_-]{11})", url)
-    if match:
-        return match.group(1)
+
+    patterns = [
+        r"youtu\.be\/([0-9A-Za-z_-]{11})",
+        r"[?&]v=([0-9A-Za-z_-]{11})",
+        r"(?:shorts|embed|v)\/([0-9A-Za-z_-]{11})"
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
     return None
 
-def fetch_youtube_innertube(video_id: str) -> Optional[List[Dict]]:
-    """جلب الترجمة مباشرة عبر عميل Android الداخلي لتجاوز حظر الـ Cloud IP"""
+def time_str_to_seconds(t_str: str) -> float:
+    t_str = t_str.strip().replace(',', '.')
+    parts = t_str.split(':')
+    if len(parts) == 3:
+        return float(parts[0]) * 3600 + float(parts[1]) * 60 + float(parts[2])
+    elif len(parts) == 2:
+        return float(parts[0]) * 60 + float(parts[1])
     try:
-        url = "https://www.youtube.com/youtubei/v1/player"
-        payload = {
-            "context": {
-                "client": {
-                    "clientName": "ANDROID",
-                    "clientVersion": "19.09.37",
-                    "hl": "ar",
-                    "gl": "US"
+        return float(t_str)
+    except Exception:
+        return 0.0
+
+def parse_vtt(content: str) -> List[Dict[str, Any]]:
+    lines = content.splitlines()
+    segments = []
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        match = re.match(r'(\d+:\d+(?::\d+)?(?:[\.,]\d+)?)\s*-->\s*(\d+:\d+(?::\d+)?(?:[\.,]\d+)?)', line)
+        if match:
+            start = time_str_to_seconds(match.group(1))
+            end = time_str_to_seconds(match.group(2))
+            dur = max(0.0, end - start)
+            i += 1
+            text_lines = []
+            while i < len(lines) and lines[i].strip() and not re.match(r'(\d+:\d+(?::\d+)?(?:[\.,]\d+)?)\s*-->', lines[i]):
+                cleaned = re.sub(r'<[^>]+>', '', lines[i])
+                cleaned = html.unescape(cleaned).strip()
+                if cleaned:
+                    text_lines.append(cleaned)
+                i += 1
+            text = " ".join(text_lines).strip()
+            if text and (not segments or segments[-1]['text'] != text):
+                segments.append({
+                    "text": text,
+                    "start": round(start, 2),
+                    "duration": round(dur, 2)
+                })
+        else:
+            i += 1
+    return segments
+
+def extract_via_ytdlp(video_id: str) -> Optional[List[Dict[str, Any]]]:
+    """Extract subtitles using yt-dlp with multi-client bypass (Android, iOS, Web)"""
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out_tmpl = os.path.join(tmpdir, f"sub_{video_id}")
+        ydl_opts = {
+            'skip_download': True,
+            'writesubtitles': True,
+            'writeautomaticsub': True,
+            'subtitlesformat': 'vtt',
+            'outtmpl': out_tmpl,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android', 'ios', 'web']
                 }
             },
-            "videoId": video_id
+            'quiet': True,
+            'no_warnings': True,
         }
-        headers = {
-            "Content-Type": "application/json",
-            "User-Agent": "com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip"
-        }
-        res = requests.post(url, json=payload, headers=headers, timeout=10)
-        if res.status_code != 200:
-            return None
         
-        data = res.json()
-        captions = data.get("captions", {}).get("playerCaptionsTracklistRenderer", {}).get("captionTracks", [])
-        if not captions:
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                if not info:
+                    return None
+                    
+                subs = info.get('subtitles', {})
+                auto_subs = info.get('automatic_captions', {})
+                
+                # Filter auto-captions to prefer native/original tracks (avoid rate-limited translated 'xx-yy')
+                original_auto = {k: v for k, v in auto_subs.items() if '-' not in k or k in ['en-US', 'en-GB', 'ar-SA']}
+                
+                chosen_lang = None
+                
+                # 1. Manual subtitles in Arabic or English
+                for pref in ['ar', 'en']:
+                    for l in subs:
+                        if l.lower().startswith(pref):
+                            chosen_lang = l
+                            break
+                    if chosen_lang: break
+                    
+                # 2. Original auto captions in Arabic or English
+                if not chosen_lang:
+                    for pref in ['ar', 'en']:
+                        for l in original_auto:
+                            if l.lower().startswith(pref):
+                                chosen_lang = l
+                                break
+                        if chosen_lang: break
+                        
+                # 3. Any manual subtitle
+                if not chosen_lang and subs:
+                    chosen_lang = next(iter(subs.keys()))
+                    
+                # 4. Any original auto caption
+                if not chosen_lang and original_auto:
+                    chosen_lang = next(iter(original_auto.keys()))
+                    
+                # 5. Any remaining auto caption
+                if not chosen_lang and auto_subs:
+                    chosen_lang = next(iter(auto_subs.keys()))
+                    
+                if not chosen_lang:
+                    return None
+                
+                ydl_opts['subtitleslangs'] = [chosen_lang]
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl_down:
+                    ydl_down.download([url])
+                    
+                files = glob.glob(os.path.join(tmpdir, f"sub_{video_id}*.vtt"))
+                if not files:
+                    return None
+                    
+                with open(files[0], 'r', encoding='utf-8', errors='ignore') as fp:
+                    vtt_content = fp.read()
+                    return parse_vtt(vtt_content)
+        except Exception:
             return None
-        
-        # اختيار الترجمة المتوفرة (العربية، أو الإنجليزية، أو الأولى)
-        selected_track = captions[0]
-        for trk in captions:
-            lang = trk.get("languageCode", "").lower()
-            if lang.startswith("ar"):
-                selected_track = trk
-                break
-            elif lang.startswith("en"):
-                selected_track = trk
 
-        base_url = selected_track.get("baseUrl")
-        if not base_url:
-            return None
-
-        # سحب النص بصيغة json3
-        timedtext_res = requests.get(base_url + "&fmt=json3", timeout=10)
-        if timedtext_res.status_code == 200:
-            tt_data = timedtext_res.json()
-            transcript = []
-            for ev in tt_data.get("events", []):
-                if "segs" in ev:
-                    text = "".join([s.get("utf8", "") for s in ev["segs"]])
-                    text = html.unescape(text).strip()
-                    if text:
-                        start = round(float(ev.get("tStartMs", 0)) / 1000.0, 2)
-                        dur = round(float(ev.get("dDurationMs", 0)) / 1000.0, 2)
-                        transcript.append({"text": text, "start": start, "duration": dur})
+def extract_via_transcript_api(video_id: str) -> Optional[List[Dict[str, Any]]]:
+    """Fallback extraction using youtube_transcript_api"""
+    try:
+        raw_data = None
+        try:
+            raw_data = YouTubeTranscriptApi.get_transcript(video_id, languages=['ar', 'en'])
+        except Exception:
+            try:
+                raw_data = YouTubeTranscriptApi.get_transcript(video_id)
+            except Exception:
+                pass
+                
+        if not raw_data:
+            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+            transcript = None
+            try:
+                transcript = transcript_list.find_transcript(['ar', 'en'])
+            except Exception:
+                transcript = next(iter(transcript_list), None)
             if transcript:
-                return transcript
+                raw_data = transcript.fetch()
+                
+        if raw_data:
+            clean_segments = []
+            for item in raw_data:
+                text = html.unescape(item.get("text", "")).replace("\n", " ").strip()
+                if text:
+                    clean_segments.append({
+                        "text": text,
+                        "start": round(float(item.get("start", 0.0)), 2),
+                        "duration": round(float(item.get("duration", 0.0)), 2)
+                    })
+            return clean_segments
     except Exception:
         pass
     return None
@@ -108,57 +204,35 @@ def fetch_youtube_innertube(video_id: str) -> Optional[List[Dict]]:
 def read_root():
     if os.path.exists("index.html"):
         return FileResponse("index.html")
-    return {"message": "Server is running."}
+    return {"message": "TranscriptFlow API is running"}
 
 @app.get("/api/transcript")
-def get_transcript(url: str = Query(..., description="رابط فيديو اليوتيوب")):
+def get_transcript(url: str = Query(..., description="YouTube video URL or Video ID")):
     video_id = extract_video_id(url)
     if not video_id:
-        raise HTTPException(status_code=400, detail="رابط يوتيوب غير صحيح. يرجى التحقق من الرابط.")
-
-    transcript_data = None
-
-    # 1. المحاولة الأساسية: عبر Innertube Android Client (لا يتم حظره من Render)
-    transcript_data = fetch_youtube_innertube(video_id)
-
-    # 2. المحاولة الثانية: عبر YouTubeTranscriptApi لدعم التلقائي واليدوي
-    if not transcript_data:
-        try:
-            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-            # البحث عن أي ترجمة سواء يدوية أو مولدة تلقائياً
-            t = None
-            try:
-                t = transcript_list.find_generated_transcript(['ar', 'en'])
-            except Exception:
-                try:
-                    t = transcript_list.find_manually_created_transcript(['ar', 'en'])
-                except Exception:
-                    t = next(iter(transcript_list), None)
-            
-            if t:
-                raw_data = t.fetch()
-                transcript_data = [
-                    {
-                        "text": html.unescape(item.get("text", "")).strip(),
-                        "start": round(float(item.get("start", 0)), 2),
-                        "duration": round(float(item.get("duration", 0)), 2)
-                    }
-                    for item in raw_data
-                ]
-        except Exception:
-            transcript_data = None
-
-    if not transcript_data:
         raise HTTPException(
-            status_code=404,
-            detail="لم نتمكن من جلب تفريغ هذا الفيديو. تأكد من أن الفيديو يحتوي على ترجمة أو تفريغ نصي متاح."
+            status_code=400, 
+            detail="Invalid YouTube URL. Please provide a valid video link."
         )
 
-    full_text = " ".join([item["text"] for item in transcript_data if item["text"]])
+    # 1. First attempt: yt-dlp with multi-client bypass
+    clean_segments = extract_via_ytdlp(video_id)
+
+    # 2. Second attempt: youtube_transcript_api
+    if not clean_segments:
+        clean_segments = extract_via_transcript_api(video_id)
+
+    if not clean_segments:
+        raise HTTPException(
+            status_code=404,
+            detail="Could not retrieve a transcript for this video. Please ensure the video has closed captions/subtitles available, or that the video is public."
+        )
+
+    full_text = " ".join([seg["text"] for seg in clean_segments])
 
     return {
         "status": "success",
         "video_id": video_id,
         "full_text": full_text,
-        "transcript": transcript_data
+        "transcript": clean_segments
     }
