@@ -83,7 +83,7 @@ def parse_vtt(content: str) -> List[Dict[str, Any]]:
     return segments
 
 def extract_via_ytdlp(video_id: str) -> Optional[List[Dict[str, Any]]]:
-    """Extract subtitles using yt-dlp with multi-client bypass (Android, iOS, Web)"""
+    """Extract subtitles using yt-dlp with multi-client bypass and original language detection"""
     url = f"https://www.youtube.com/watch?v={video_id}"
     
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -112,39 +112,45 @@ def extract_via_ytdlp(video_id: str) -> Optional[List[Dict[str, Any]]]:
                 subs = info.get('subtitles', {})
                 auto_subs = info.get('automatic_captions', {})
                 
-                # Filter auto-captions to prefer native/original tracks (avoid rate-limited translated 'xx-yy')
-                original_auto = {k: v for k, v in auto_subs.items() if '-' not in k or k in ['en-US', 'en-GB', 'ar-SA']}
+                # Combine available language keys
+                all_manual = list(subs.keys())
+                all_auto = list(auto_subs.keys())
                 
+                # Prioritize original audio tracks (*-orig) and direct language codes
                 chosen_lang = None
                 
-                # 1. Manual subtitles in Arabic or English
-                for pref in ['ar', 'en']:
-                    for l in subs:
-                        if l.lower().startswith(pref):
-                            chosen_lang = l
-                            break
-                    if chosen_lang: break
-                    
-                # 2. Original auto captions in Arabic or English
+                # 1. Look for Arabic original or manual
+                for l in all_auto:
+                    if l.startswith('ar-orig') or l == 'ar':
+                        chosen_lang = l; break
                 if not chosen_lang:
-                    for pref in ['ar', 'en']:
-                        for l in original_auto:
-                            if l.lower().startswith(pref):
-                                chosen_lang = l
-                                break
-                        if chosen_lang: break
-                        
-                # 3. Any manual subtitle
-                if not chosen_lang and subs:
-                    chosen_lang = next(iter(subs.keys()))
-                    
-                # 4. Any original auto caption
-                if not chosen_lang and original_auto:
-                    chosen_lang = next(iter(original_auto.keys()))
-                    
-                # 5. Any remaining auto caption
-                if not chosen_lang and auto_subs:
-                    chosen_lang = next(iter(auto_subs.keys()))
+                    for l in all_manual:
+                        if l.startswith('ar'):
+                            chosen_lang = l; break
+                            
+                # 2. Look for English original or manual
+                if not chosen_lang:
+                    for l in all_auto:
+                        if l.startswith('en-orig') or l == 'en':
+                            chosen_lang = l; break
+                if not chosen_lang:
+                    for l in all_manual:
+                        if l.startswith('en'):
+                            chosen_lang = l; break
+
+                # 3. Any other *-orig original auto caption
+                if not chosen_lang:
+                    for l in all_auto:
+                        if '-orig' in l:
+                            chosen_lang = l; break
+
+                # 4. Any manual subtitle
+                if not chosen_lang and all_manual:
+                    chosen_lang = all_manual[0]
+
+                # 5. Any auto subtitle
+                if not chosen_lang and all_auto:
+                    chosen_lang = all_auto[0]
                     
                 if not chosen_lang:
                     return None
@@ -215,7 +221,7 @@ def get_transcript(url: str = Query(..., description="YouTube video URL or Video
             detail="Invalid YouTube URL. Please provide a valid video link."
         )
 
-    # 1. First attempt: yt-dlp with multi-client bypass
+    # 1. First attempt: yt-dlp with multi-client bypass & native track prioritization
     clean_segments = extract_via_ytdlp(video_id)
 
     # 2. Second attempt: youtube_transcript_api
