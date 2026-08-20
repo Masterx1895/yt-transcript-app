@@ -3,7 +3,6 @@ import re
 import html
 import tempfile
 import glob
-import requests
 from typing import Optional, List, Dict, Any
 
 from fastapi import FastAPI, HTTPException, Query
@@ -12,7 +11,7 @@ from fastapi.responses import FileResponse
 import yt_dlp
 from youtube_transcript_api import YouTubeTranscriptApi
 
-app = FastAPI(title="TranscriptFlow API", version="2.0.0")
+app = FastAPI(title="TranscriptFlow API", version="2.5.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -22,8 +21,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# تحديد المسار المطلق لملف الكوكيز لضمان العثور عليه على سيرفرات Render
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+COOKIE_FILE = os.path.join(BASE_DIR, "cookies.txt")
+
+def get_cookie_path() -> Optional[str]:
+    """التحقق من وجود ملف الكوكيز بالمسار الدقيق"""
+    if os.path.exists(COOKIE_FILE) and os.path.getsize(COOKIE_FILE) > 10:
+        return COOKIE_FILE
+    return None
+
 def extract_video_id(url: str) -> Optional[str]:
-    """Extract YouTube 11-char video ID from any URL variant or raw ID"""
+    """استخراج معرّف الفيديو بدقة من أي صيغة رابط"""
     if not url:
         return None
     url = url.strip()
@@ -83,9 +92,54 @@ def parse_vtt(content: str) -> List[Dict[str, Any]]:
             i += 1
     return segments
 
+def extract_via_transcript_api(video_id: str) -> Optional[List[Dict[str, Any]]]:
+    """المحاولة الأولى عبر youtube_transcript_api مع دعم الكوكيز الكامل"""
+    cookie_path = get_cookie_path()
+    raw_data = None
+
+    try:
+        # محاولة البحث عن الترجمة باللغات المفضلة أو التلقائية
+        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id, cookies=cookie_path)
+        transcript = None
+        try:
+            transcript = transcript_list.find_transcript(['ar', 'en'])
+        except Exception:
+            try:
+                transcript = transcript_list.find_generated_transcript(['ar', 'en'])
+            except Exception:
+                transcript = next(iter(transcript_list), None)
+        
+        if transcript:
+            raw_data = transcript.fetch()
+    except Exception:
+        pass
+
+    if not raw_data:
+        try:
+            raw_data = YouTubeTranscriptApi.get_transcript(video_id, languages=['ar', 'en'], cookies=cookie_path)
+        except Exception:
+            try:
+                raw_data = YouTubeTranscriptApi.get_transcript(video_id, cookies=cookie_path)
+            except Exception:
+                pass
+
+    if raw_data:
+        clean_segments = []
+        for item in raw_data:
+            text = html.unescape(item.get("text", "")).replace("\n", " ").strip()
+            if text:
+                clean_segments.append({
+                    "text": text,
+                    "start": round(float(item.get("start", 0.0)), 2),
+                    "duration": round(float(item.get("duration", 0.0)), 2)
+                })
+        return clean_segments
+    return None
+
 def extract_via_ytdlp(video_id: str) -> Optional[List[Dict[str, Any]]]:
-    """Extract subtitles using yt-dlp with cookie support and fallback stream parsing"""
+    """المحاولة الاحتياطية عبر yt-dlp بتنزيل ملف الترجمة كاملاً مع الكوكيز"""
     url = f"https://www.youtube.com/watch?v={video_id}"
+    cookie_path = get_cookie_path()
     
     with tempfile.TemporaryDirectory() as tmpdir:
         out_tmpl = os.path.join(tmpdir, f"sub_{video_id}")
@@ -95,20 +149,14 @@ def extract_via_ytdlp(video_id: str) -> Optional[List[Dict[str, Any]]]:
             'writeautomaticsub': True,
             'subtitlesformat': 'vtt',
             'outtmpl': out_tmpl,
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['android', 'ios', 'web']
-                }
-            },
             'quiet': True,
             'no_warnings': True,
             'no_check_certificate': True,
         }
         
-        # استخدام ملف الكوكيز تلقائياً في حال توفره لتجاوز حظر Render السحابي
-        if os.path.exists("cookies.txt"):
-            ydl_opts['cookiefile'] = "cookies.txt"
-        
+        if cookie_path:
+            ydl_opts['cookiefile'] = cookie_path
+
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
@@ -117,64 +165,33 @@ def extract_via_ytdlp(video_id: str) -> Optional[List[Dict[str, Any]]]:
                     
                 subs = info.get('subtitles', {})
                 auto_subs = info.get('automatic_captions', {})
-                
                 all_manual = list(subs.keys())
                 all_auto = list(auto_subs.keys())
                 
                 chosen_lang = None
-                is_auto = False
-                
-                # 1. Arabic priority
                 for l in all_auto:
                     if l.startswith('ar-orig') or l == 'ar':
-                        chosen_lang = l; is_auto = True; break
+                        chosen_lang = l; break
                 if not chosen_lang:
                     for l in all_manual:
                         if l.startswith('ar'):
                             chosen_lang = l; break
-                            
-                # 2. English priority
                 if not chosen_lang:
                     for l in all_auto:
                         if l.startswith('en-orig') or l == 'en':
-                            chosen_lang = l; is_auto = True; break
+                            chosen_lang = l; break
                 if not chosen_lang:
                     for l in all_manual:
                         if l.startswith('en'):
                             chosen_lang = l; break
-
-                # 3. Any original audio caption
-                if not chosen_lang:
-                    for l in all_auto:
-                        if '-orig' in l:
-                            chosen_lang = l; is_auto = True; break
-
-                # 4. Any manual subtitle
                 if not chosen_lang and all_manual:
                     chosen_lang = all_manual[0]
-
-                # 5. Any auto subtitle
                 if not chosen_lang and all_auto:
-                    chosen_lang = all_auto[0]; is_auto = True
+                    chosen_lang = all_auto[0]
                     
                 if not chosen_lang:
                     return None
 
-                # محاولة قراءة رابط ملف الترجمة مباشرة
-                track_list = auto_subs.get(chosen_lang, []) if is_auto else subs.get(chosen_lang, [])
-                for track in track_list:
-                    sub_url = track.get('url')
-                    if sub_url:
-                        try:
-                            res = requests.get(sub_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
-                            if res.status_code == 200 and len(res.text) > 30:
-                                parsed = parse_vtt(res.text)
-                                if parsed:
-                                    return parsed
-                        except Exception:
-                            continue
-
-                # محاولة التنزيل المباشر
                 ydl_opts['subtitleslangs'] = [chosen_lang]
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl_down:
                     ydl_down.download([url])
@@ -185,43 +202,6 @@ def extract_via_ytdlp(video_id: str) -> Optional[List[Dict[str, Any]]]:
                         return parse_vtt(fp.read())
         except Exception:
             return None
-    return None
-
-def extract_via_transcript_api(video_id: str) -> Optional[List[Dict[str, Any]]]:
-    """Fallback extraction using youtube_transcript_api"""
-    try:
-        raw_data = None
-        try:
-            raw_data = YouTubeTranscriptApi.get_transcript(video_id, languages=['ar', 'en'])
-        except Exception:
-            try:
-                raw_data = YouTubeTranscriptApi.get_transcript(video_id)
-            except Exception:
-                pass
-                
-        if not raw_data:
-            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-            transcript = None
-            try:
-                transcript = transcript_list.find_transcript(['ar', 'en'])
-            except Exception:
-                transcript = next(iter(transcript_list), None)
-            if transcript:
-                raw_data = transcript.fetch()
-                
-        if raw_data:
-            clean_segments = []
-            for item in raw_data:
-                text = html.unescape(item.get("text", "")).replace("\n", " ").strip()
-                if text:
-                    clean_segments.append({
-                        "text": text,
-                        "start": round(float(item.get("start", 0.0)), 2),
-                        "duration": round(float(item.get("duration", 0.0)), 2)
-                    })
-            return clean_segments
-    except Exception:
-        pass
     return None
 
 @app.get("/")
@@ -239,17 +219,17 @@ def get_transcript(url: str = Query(..., description="YouTube video URL or Video
             detail="Invalid YouTube URL. Please provide a valid video link."
         )
 
-    # 1. First attempt: yt-dlp (with cookies.txt support)
-    clean_segments = extract_via_ytdlp(video_id)
+    # 1. المحاولة الأولى: عبر youtube-transcript-api مع الكوكيز (سريعة جداً)
+    clean_segments = extract_via_transcript_api(video_id)
 
-    # 2. Second attempt: youtube_transcript_api
+    # 2. المحاولة الثانية: عبر yt-dlp مع الكوكيز
     if not clean_segments:
-        clean_segments = extract_via_transcript_api(video_id)
+        clean_segments = extract_via_ytdlp(video_id)
 
     if not clean_segments:
         raise HTTPException(
             status_code=404,
-            detail="Could not retrieve a transcript for this video. Please ensure the video has closed captions/subtitles available, or that the video is public."
+            detail="Could not retrieve a transcript for this video. Please ensure the video has closed captions/subtitles available."
         )
 
     full_text = " ".join([seg["text"] for seg in clean_segments])
