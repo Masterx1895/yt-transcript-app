@@ -229,8 +229,8 @@ def get_transcript(url: str = Query(..., description="YouTube video URL or Video
 
     if not clean_segments:
         raise HTTPException(
-            status_code=404,
-            detail="Could not retrieve a transcript for this video. Please ensure the video has closed captions/subtitles available."
+            status_code=400,
+            detail="يوتيوب رفض الطلب. يرجى تحديث ملف cookies.txt لأن صلاحيته غالباً انتهت، أو لا توجد ترجمة للفيديو."
         )
 
     full_text = " ".join([seg["text"] for seg in clean_segments])
